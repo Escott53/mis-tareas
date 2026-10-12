@@ -24,7 +24,10 @@
     compra: { label: 'Lista de compra', desc: 'Añadir rápido y tachar', icon: '🛒' },
     rutina: { label: 'Rutina diaria', desc: 'Se reinicia cada día', icon: '🔁' },
     notas:  { label: 'Notas y vídeos', desc: 'Ideas, textos y YouTube', icon: '🎬' },
+    cargos: { label: 'Cargos domiciliados', desc: 'Recibos y próximos cargos', icon: '💳' },
   };
+  const PERIODS = { mensual: [1, 'Mensual'], bimestral: [2, 'Bimestral'], trimestral: [3, 'Trimestral'], semestral: [6, 'Semestral'], anual: [12, 'Anual'] };
+  const WARN_DAYS = 15, ALERT_DAYS = 7;
   const EMOJIS = ['✨','🙏','🕊️','📿','🛒','🥦','🍎','🥖','🌅','☀️','☕','🌙','⭐','😴','💪','🏃',
     '🧘','📚','📝','💡','🎯','💼','🏠','🧹','❤️','👨‍👩‍👧','🎁','✈️','🎬','🎵','💰','🌱','🐶','🔧','🎨','📌'];
   const DAYS_SHORT = ['D', 'L', 'M', 'X', 'J', 'V', 'S'];
@@ -73,7 +76,9 @@
         f('Compra', '🛒', 'bosque', 'compra'),
         f('Al despertar', '🌅', 'amanecer', 'rutina'),
         f('Por la noche', '🌙', 'noche', 'rutina'),
+        f('Cargos', '💳', 'coral', 'cargos'),
       ],
+      cargosAdded: true,
     };
   }
   let state;
@@ -84,6 +89,12 @@
       if (!state || !Array.isArray(state.folders)) state = defaultState();
     } catch (_) { state = defaultState(); }
     state.folders.forEach((f) => { f.items ||= []; f.completedDays ||= []; f.type ||= 'normal'; f.color ||= 'violeta'; });
+    // Migración: añadir una vez la carpeta «Cargos» a los datos existentes (si se borra, no vuelve).
+    if (!state.cargosAdded) {
+      if (!state.folders.some((f) => f.type === 'cargos'))
+        state.folders.push({ id: uid(), name: 'Cargos', emoji: '💳', color: 'coral', type: 'cargos', items: [], completedDays: [], lastReset: dayKey(), created: Date.now() });
+      state.cargosAdded = true;
+    }
     dailyReset(false);
     save();
   }
@@ -134,6 +145,111 @@
       best = Math.max(best, cur); prev = d;
     });
     return best;
+  }
+
+  // ---------- Cargos domiciliados ----------
+  const parseDay = (k) => { const [y, m, d] = k.split('-').map(Number); return new Date(y, m - 1, d); };
+  const daysInMonth = (y, m) => new Date(y, m + 1, 0).getDate();
+  // Fecha con día «deseado» ajustado a meses cortos (31 → 30/28/29).
+  const clampDate = (y, m, day) => { const d = new Date(y, m, 1); return new Date(d.getFullYear(), d.getMonth(), Math.min(day, daysInMonth(d.getFullYear(), d.getMonth()))); };
+  const today0 = () => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), d.getDate()); };
+  function nextCharge(c, from = today0()) {
+    const step = (PERIODS[c.period] || PERIODS.mensual)[0];
+    const s = parseDay(c.start);
+    const day = c.day || s.getDate();
+    let k = 0, d = clampDate(s.getFullYear(), s.getMonth(), day);
+    while (d < from && k < 2400) { k += step; d = clampDate(s.getFullYear(), s.getMonth() + k, day); }
+    return d;
+  }
+  // Primera fecha a partir de hoy para «día del mes».
+  function firstForDay(day) {
+    const t = today0(); let d = clampDate(t.getFullYear(), t.getMonth(), day);
+    if (d < t) d = clampDate(t.getFullYear(), t.getMonth() + 1, day);
+    return d;
+  }
+  const daysUntil = (d) => Math.round((d - today0()) / 86400000);
+  const countdown = (n) => n === 0 ? 'hoy' : n === 1 ? 'mañana' : `en ${n} días`;
+  const eur = (n) => (Number(n) || 0).toLocaleString('es-ES', { style: 'currency', currency: 'EUR' });
+  const fmtDate = (d) => d.toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short', year: d.getFullYear() !== new Date().getFullYear() ? 'numeric' : undefined });
+  const cargosOf = (f) => f.items.filter((i) => i.kind === 'cargo');
+  const monthlyTotal = (list) => list.reduce((n, c) => n + (Number(c.amount) || 0) / (PERIODS[c.period] || PERIODS.mensual)[0], 0);
+  const urgency = (n) => n <= ALERT_DAYS ? 'red' : n <= WARN_DAYS ? 'orange' : '';
+  function upcomingCharges() {
+    return state.folders.filter((f) => f.type === 'cargos').flatMap((f) => cargosOf(f).map((c) => ({ f, c, d: nextCharge(c) })))
+      .map((x) => ({ ...x, n: daysUntil(x.d) })).filter((x) => x.n <= WARN_DAYS).sort((a, b) => a.d - b.d);
+  }
+  function cargoHtml(c) {
+    const d = nextCharge(c), n = daysUntil(d), u = urgency(n);
+    return `<div class="item cargo ${u}" data-id="${c.id}" data-cedit="${c.id}" tabindex="0">
+      <div class="cargo-ico">💳</div>
+      <div class="body"><div class="txt">${esc(c.name)}</div>
+        <div class="sub">${esc(fmtDate(d))} · ${PERIODS[c.period]?.[1] || 'Mensual'}${c.account ? ' · ' + esc(c.account) : ''}</div></div>
+      <div class="cargo-side"><b>${eur(c.amount)}</b><span class="cd">${countdown(n)}</span></div>
+      <button class="menu" data-menu="${c.id}" aria-label="Opciones">⋯</button></div>`;
+  }
+  function cargoForm(f, c) {
+    const editing = !!c;
+    const d = c ? { ...c } : { name: '', amount: '', account: '', period: 'mensual', mode: 'date', start: dayKey(), day: new Date().getDate() };
+    const nd = c ? nextCharge(c) : null;
+    const sheet = openSheet(`<h3>${editing ? 'Editar cargo' : 'Nuevo cargo'}</h3>
+      <label class="lbl" for="cn">Nombre</label>
+      <input class="field" id="cn" maxlength="60" placeholder="Ej. Luz, Netflix, Seguro coche…" value="${esc(d.name)}">
+      <label class="lbl" for="ca">Importe (€)</label>
+      <input class="field" id="ca" inputmode="decimal" placeholder="0,00" value="${d.amount !== '' ? esc(String(d.amount).replace('.', ',')) : ''}">
+      <label class="lbl" for="cc">Cuenta / tarjeta</label>
+      <input class="field" id="cc" maxlength="60" placeholder="Ej. BBVA ··1234, Visa" value="${esc(d.account || '')}">
+      <label class="lbl">Periodicidad</label>
+      <div class="seg" id="cp">${Object.entries(PERIODS).map(([k, [, l]]) => `<button type="button" data-p="${k}">${l}</button>`).join('')}</div>
+      <label class="lbl">¿Cuándo se cobra?</label>
+      <div class="type-grid">
+        <button type="button" data-m="date"><b>📅 Fecha</b><small>Próximo cargo</small></button>
+        <button type="button" data-m="day"><b>🗓️ Día del mes</b><small>Ej. el día 5</small></button></div>
+      <div id="m-date"><label class="lbl" for="cd">Fecha del próximo cargo</label><input class="field" id="cd" type="date" value="${nd ? dayKey(nd) : esc(d.start)}"></div>
+      <div id="m-day"><label class="lbl" for="cdy">Día del mes (1–31)</label><input class="field" id="cdy" type="number" min="1" max="31" inputmode="numeric" value="${d.day || ''}"></div>
+      <div class="sheet-actions"><button class="btn" data-x="no">Cancelar</button><button class="btn primary" data-x="ok">${editing ? 'Guardar' : 'Añadir cargo'}</button></div>`);
+    const paint = () => {
+      sheet.querySelectorAll('[data-p]').forEach((b) => b.classList.toggle('on', b.dataset.p === d.period));
+      sheet.querySelectorAll('[data-m]').forEach((b) => b.classList.toggle('on', b.dataset.m === d.mode));
+      $('#m-date', sheet).hidden = d.mode !== 'date'; $('#m-day', sheet).hidden = d.mode !== 'day';
+    };
+    paint();
+    sheet.onclick = (e) => {
+      const pb = e.target.closest('[data-p]'); if (pb) { d.period = pb.dataset.p; paint(); return; }
+      const mb = e.target.closest('[data-m]'); if (mb) { d.mode = mb.dataset.m; paint(); return; }
+      const x = e.target.closest('[data-x]')?.dataset.x;
+      if (x === 'no') closeSheet();
+      if (x !== 'ok') return;
+      const bad = (el) => { el.focus(); el.style.borderColor = 'var(--danger)'; };
+      const name = $('#cn', sheet).value.trim(); if (!name) return bad($('#cn', sheet));
+      const amount = parseFloat($('#ca', sheet).value.replace(/\s|€/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.'));
+      if (!isFinite(amount) || amount < 0) return bad($('#ca', sheet));
+      let start, day;
+      if (d.mode === 'day') {
+        day = parseInt($('#cdy', sheet).value, 10); if (!(day >= 1 && day <= 31)) return bad($('#cdy', sheet));
+        start = dayKey(firstForDay(day));
+      } else {
+        const v = $('#cd', sheet).value; if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return bad($('#cd', sheet));
+        start = v; day = parseDay(v).getDate();
+      }
+      const data = { name, amount: Math.round(amount * 100) / 100, account: $('#cc', sheet).value.trim(), period: d.period, mode: d.mode, start, day };
+      if (editing) Object.assign(c, data); else f.items.push({ id: uid(), kind: 'cargo', created: Date.now(), ...data });
+      vibrate(10); save(); closeSheet(); render();
+    };
+    if (!editing) setTimeout(() => $('#cn', sheet)?.focus(), 350);
+  }
+  function cargoMenu(f, c) {
+    openSheet(`<h3>💳 ${esc(c.name)}</h3><div class="menu-list">
+      <button data-x="edit"><span class="mi">✏️</span>Editar cargo</button>
+      <button data-x="del" class="danger"><span class="mi">🗑️</span>Eliminar cargo</button></div>`, (s) => {
+      s.onclick = (e) => {
+        const x = e.target.closest('[data-x]')?.dataset.x;
+        if (x === 'edit') cargoForm(f, c);
+        if (x === 'del') {
+          const i = f.items.indexOf(c); f.items.splice(i, 1); save(); closeSheet(); render(); vibrate(15);
+          toast('Cargo eliminado', 'Deshacer', () => { f.items.splice(i, 0, c); save(); render(); });
+        }
+      };
+    });
   }
 
   // ---------- Router ----------
@@ -187,6 +303,12 @@
       const pend = f.items.filter((i) => i.kind === 'check' && !i.done).length;
       return { text: f.items.length ? (pend ? plural(pend, 'por comprar', 'por comprar') : 'Todo comprado ✓') : 'Lista vacía' };
     }
+    if (f.type === 'cargos') {
+      const cs = cargosOf(f);
+      if (!cs.length) return { text: 'Sin cargos' };
+      const n = Math.min(...cs.map((c) => daysUntil(nextCharge(c))));
+      return { text: `${eur(monthlyTotal(cs))}/mes · próximo ${countdown(n)}` };
+    }
     if (f.type === 'notas') {
       const v = f.items.filter((i) => i.kind === 'link' && youtubeId(i.url)).length;
       const n = f.items.length - v;
@@ -214,6 +336,7 @@
         <button class="icon-btn" data-act="settings" aria-label="Ajustes">⚙️</button>
       </header>
       ${pills.length ? `<div class="summary">${pills.join('')}</div>` : ''}
+      ${dueBanner()}
       <section class="grid">
         ${state.folders.map((f, i) => {
           const m = folderMeta(f);
@@ -228,6 +351,15 @@
       </section>
     </main>`;
   }
+  let bannerHidden = false;
+  function dueBanner() {
+    const up = upcomingCharges();
+    if (!up.length || bannerHidden) return '';
+    return `<section class="due-banner ${up.some((x) => x.n <= ALERT_DAYS) ? 'red' : 'orange'}">
+      <div class="due-head"><b>💳 Próximos cargos</b><span>en ${WARN_DAYS} días: ${up.length}</span><button data-act="hide-banner" aria-label="Ocultar">✕</button></div>
+      ${up.map((x) => `<button class="due-row ${urgency(x.n)}" data-open="${x.f.id}"><span>${esc(x.c.name)}</span><small>${countdown(x.n)}</small><b>${eur(x.c.amount)}</b></button>`).join('')}
+    </section>`;
+  }
   function bindHome() {
     const app = $('#app');
     app.onclick = (e) => {
@@ -238,9 +370,10 @@
       const act = e.target.closest('[data-act]')?.dataset.act;
       if (act === 'new-folder') folderForm();
       if (act === 'settings') settingsMenu();
+      if (act === 'hide-banner') { bannerHidden = true; render(); }
     };
     app.onkeydown = (e) => { const o = e.target.closest('[data-open]'); if (o && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); go('#/f/' + o.dataset.open); } };
-    bindLongPress(app, '[data-open]', (el) => folderMenu(folderById(el.dataset.open)));
+    bindLongPress(app, '.folder[data-open]', (el) => folderMenu(folderById(el.dataset.open)));
   }
 
   // ---------- Vista carpeta ----------
@@ -296,6 +429,9 @@
           <div class="streak ${s ? 'hot' : ''}"><span class="fire">🔥</span><b>${s}</b><small>${s === 1 ? 'día seguido' : 'días seguidos'}</small></div>
         </div>
         <div class="week">${week}</div>`;
+    } else if (f.type === 'cargos') {
+      const cs = cargosOf(f), soon = cs.filter((c) => daysUntil(nextCharge(c)) <= WARN_DAYS);
+      hero = `<div class="progress-wrap"><div class="progress-text"><b>${eur(monthlyTotal(cs))}</b><small>estimado al mes · ${plural(cs.length, 'cargo', 'cargos')}${soon.length ? ` · ${soon.length} en ${WARN_DAYS} días` : ''}</small></div></div>`;
     } else if (f.type === 'compra') {
       const pend = f.items.filter((i) => i.kind === 'check' && !i.done).length;
       const bought = f.items.filter((i) => i.kind === 'check' && i.done).length;
@@ -303,7 +439,11 @@
     }
 
     let body;
-    if (!f.items.length) {
+    if (f.type === 'cargos') {
+      const cs = cargosOf(f).map((c) => [c, nextCharge(c)]).sort((a, b) => a[1] - b[1]);
+      body = cs.length ? `<div class="list">${cs.map(([c]) => cargoHtml(c)).join('')}</div>`
+        : `<div class="empty"><span class="big">💳</span><b>Sin cargos todavía</b>Añade tus recibos domiciliados y te avisaremos antes de cada cargo.</div>`;
+    } else if (!f.items.length) {
       const msg = {
         compra: ['🛒', 'Tu lista está vacía', 'Escribe abajo lo que necesitas comprar.'],
         rutina: ['🌱', 'Crea tu rutina', 'Añade pasos abajo. Cada día se desmarcan solos.'],
@@ -339,18 +479,19 @@
         ${hero}
       </section>
       ${body}
-      <div class="addbar"><div class="addbar-inner">
+      ${f.type === 'cargos' ? `<div class="addbar"><div class="addbar-inner"><button class="btn primary add-cargo" data-act="add-cargo">+ Añadir cargo</button></div></div>` : `<div class="addbar"><div class="addbar-inner">
         ${kinds.length ? `<div class="kinds">${kinds.map(([x, l]) => `<button data-kind="${x}" class="${x === k ? 'on' : ''}">${l}</button>`).join('')}</div>` : ''}
         <form class="add-row" autocomplete="off">
           <textarea rows="1" id="add-input" placeholder="${esc(placeholder(f, k))}" enterkeyhint="${k === 'note' ? 'enter' : 'done'}" aria-label="Añadir"></textarea>
           <button class="send" type="submit" aria-label="Añadir">+</button>
         </form>
-      </div></div>
+      </div></div>`}
     </main>`;
   }
 
   function bindFolder(f) {
     const app = $('#app');
+    if (f.type === 'cargos') return bindCargos(f);
     const input = $('#add-input');
     const kinds = kindsFor(f);
     const curKind = () => (kinds.length ? ($('.kinds .on')?.dataset.kind || defaultKind(f)) : 'check');
@@ -425,6 +566,22 @@
     // Recuperar títulos de vídeos que no lo tengan (una vez por sesión)
     f.items.filter((i) => i.kind === 'link' && !i.title && youtubeId(i.url) && !titleTried.has(i.id))
       .forEach((i) => { titleTried.add(i.id); fetchTitle(f, i); });
+  }
+  function bindCargos(f) {
+    const app = $('#app');
+    const find = (id) => f.items.find((i) => i.id === id);
+    app.onclick = (e) => {
+      const menu = e.target.closest('[data-menu]');
+      if (menu) { e.stopPropagation(); cargoMenu(f, find(menu.dataset.menu)); return; }
+      const ed = e.target.closest('[data-cedit]');
+      if (ed) { cargoForm(f, find(ed.dataset.cedit)); return; }
+      const act = e.target.closest('[data-act]')?.dataset.act;
+      if (act === 'back') { history.length > 1 && lastWasHome ? history.back() : go('#/'); }
+      if (act === 'folder-menu') folderMenu(f);
+      if (act === 'add-cargo') cargoForm(f);
+    };
+    app.onkeydown = (e) => { const ed = e.target.closest('[data-cedit]'); if (ed && e.target === ed && e.key === 'Enter') cargoForm(f, find(ed.dataset.cedit)); };
+    bindLongPress(app, '.item', (el) => cargoMenu(f, find(el.dataset.id)));
   }
   const titleTried = new Set();
   let lastWasHome = false;
@@ -544,10 +701,11 @@
     if (!f) return;
     const others = state.folders.filter((x) => x.id !== f.id);
     const isRut = f.type === 'rutina';
+    const othersM = others.filter((x) => x.type !== 'cargos');
     openSheet(`<h3>${esc(f.emoji)} ${esc(f.name)}</h3><div class="menu-list">
       <button data-x="edit"><span class="mi">✏️</span>Editar carpeta</button>
       ${isRut ? `<button data-x="stats"><span class="mi">📊</span>Estadísticas de la rutina</button><button data-x="reset"><span class="mi">↺</span>Desmarcar todo hoy</button>` : ''}
-      ${others.length && f.items.length ? `<button data-x="merge"><span class="mi">🔀</span>Combinar con otra carpeta…</button>` : ''}
+      ${othersM.length && f.items.length && f.type !== 'cargos' ? `<button data-x="merge"><span class="mi">🔀</span>Combinar con otra carpeta…</button>` : ''}
       <button data-x="up"><span class="mi">⬆️</span>Mover antes</button>
       <button data-x="down"><span class="mi">⬇️</span>Mover después</button>
       <button data-x="del" class="danger"><span class="mi">🗑️</span>Eliminar carpeta</button>
@@ -583,7 +741,7 @@
   }
 
   function folderPicker(title, exclude, cb) {
-    const others = state.folders.filter((x) => x.id !== exclude);
+    const others = state.folders.filter((x) => x.id !== exclude && x.type !== 'cargos');
     openSheet(`<h3>${esc(title)}</h3><div class="menu-list">
       ${others.map((o) => `<button data-to="${o.id}"><span class="fdot" style="background:linear-gradient(135deg,${(GRADIENTS[o.color] || GRADIENTS.violeta).join(',')})">${esc(o.emoji)}</span>${esc(o.name)}<small style="margin-left:auto;color:var(--muted)">${TYPES[o.type]?.label || ''}</small></button>`).join('')}
     </div><div class="sheet-actions"><button class="btn" data-x="no">Cancelar</button></div>`, (s) => {
@@ -683,7 +841,8 @@
   // ---------- Menú de elemento ----------
   function itemMenu(f, it) {
     if (!it) return;
-    const others = state.folders.filter((x) => x.id !== f.id);
+    if (it.kind === 'cargo') return cargoMenu(f, it);
+    const others = state.folders.filter((x) => x.id !== f.id && x.type !== 'cargos');
     const label = it.kind === 'link' ? (it.title || hostOf(it.url)) : it.text;
     openSheet(`<h3 style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(label)}</h3><div class="menu-list">
       <button data-x="edit"><span class="mi">✏️</span>Editar</button>
@@ -760,7 +919,7 @@
       <button data-x="install"><span class="mi">📲</span>Cómo instalar en el móvil</button>
       <button data-x="reset" class="danger"><span class="mi">♻️</span>Borrar todo y empezar de cero</button>
     </div>
-    <p style="color:var(--muted);font-size:13px;text-align:center;margin:16px 0 0">Tus datos se guardan solo en este dispositivo.<br>Mis Tareas · v1</p>
+    <p style="color:var(--muted);font-size:13px;text-align:center;margin:16px 0 0">Tus datos se guardan solo en este dispositivo.<br>Mis Tareas · v3</p>
     <input type="file" id="imp" accept="application/json,.json" hidden>`, (s) => {
       s.onclick = (e) => {
         const x = e.target.closest('[data-x]')?.dataset.x; if (!x) return;
@@ -778,7 +937,7 @@
             <p>Una vez instalada funciona sin conexión (excepto los vídeos).</p></div>
             <div class="sheet-actions"><button class="btn primary" data-x="ok">Entendido</button></div>`, (s2) => { s2.onclick = (ev) => { if (ev.target.closest('[data-x]')) closeSheet(); }; });
         }
-        if (x === 'reset') confirmSheet('¿Borrar todo?', 'Se eliminarán todas las carpetas y elementos y se volverá a las 4 carpetas iniciales vacías. Esta acción no se puede deshacer.', 'Borrar todo', () => { state = defaultState(); save(); go('#/'); render(); toast('Datos reiniciados'); });
+        if (x === 'reset') confirmSheet('¿Borrar todo?', 'Se eliminarán todas las carpetas y elementos y se volverá a las carpetas iniciales vacías. Esta acción no se puede deshacer.', 'Borrar todo', () => { state = defaultState(); save(); go('#/'); render(); toast('Datos reiniciados'); });
       };
       $('#imp', s).onchange = async (e) => {
         const file = e.target.files[0]; if (!file) return;
