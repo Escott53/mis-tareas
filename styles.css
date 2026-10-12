@@ -309,3 +309,15 @@ textarea.field { min-height: 140px; resize: vertical; line-height: 1.4; }
 .due-row.red { background: color-mix(in srgb, var(--alert) 11%, transparent); } .due-row.red small { color: var(--alert); }
 .due-row + .due-row { margin-top: 6px; }
 [hidden] { display: none !important; }
+
+/* Previsión de cargos */
+.forecast { margin: 18px 0 8px; padding: 14px 16px; background: var(--card, #fff); border-radius: 18px; box-shadow: var(--shadow-sm); }
+.fc-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+.fc-head span { color: var(--muted); font-size: 13px; }
+.fc-row { display: grid; grid-template-columns: 58px 1fr 84px; align-items: center; gap: 10px; font-size: 13px; padding: 3px 0; }
+.fc-m { color: var(--muted); text-transform: capitalize; }
+.fc-row b { text-align: right; font-variant-numeric: tabular-nums; }
+.fc-bar { height: 10px; border-radius: 6px; background: rgba(127,127,127,.15); overflow: hidden; }
+.fc-bar i { display: block; height: 100%; border-radius: 6px; background: var(--accent); }
+.addbar-inner:has(.add-cargo) { display: flex; gap: 8px; }
+.addbar-inner .add-cargo { flex: 1; }

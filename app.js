@@ -178,6 +178,42 @@
     return state.folders.filter((f) => f.type === 'cargos').flatMap((f) => cargosOf(f).map((c) => ({ f, c, d: nextCharge(c) })))
       .map((x) => ({ ...x, n: daysUntil(x.d) })).filter((x) => x.n <= WARN_DAYS).sort((a, b) => a.d - b.d);
   }
+  // Previsión: total por mes de los próximos 12 meses, colocando cada periodicidad en su mes.
+  function forecast(cs, months = 12) {
+    const t = today0(), out = [];
+    for (let i = 1; i <= months; i++) {
+      const a = new Date(t.getFullYear(), t.getMonth() + i, 1), b = new Date(t.getFullYear(), t.getMonth() + i + 1, 1);
+      let sum = 0, n = 0;
+      cs.forEach((c) => { let d = nextCharge(c, a), k = 0; while (d < b && k++ < 40) { sum += Number(c.amount) || 0; n++; d = nextCharge(c, new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)); } });
+      out.push({ m: a, sum, n });
+    }
+    return out;
+  }
+  function forecastHtml(cs) {
+    if (!cs.length) return '';
+    const fc = forecast(cs), max = Math.max(...fc.map((x) => x.sum), 1), tot = fc.reduce((n, x) => n + x.sum, 0);
+    return `<section class="forecast"><div class="fc-head"><b>📊 Previsión</b><span>próx. 12 meses: ${eur(tot)}</span></div>
+      ${fc.map((x) => `<div class="fc-row"><span class="fc-m">${x.m.toLocaleDateString('es-ES', { month: 'short', year: '2-digit' })}</span><div class="fc-bar"><i style="width:${(x.sum / max * 100).toFixed(1)}%"></i></div><b>${eur(x.sum)}</b></div>`).join('')}</section>`;
+  }
+  // Importa cargos desde JSON ({cargos:[...]} o [...]) y los fusiona sin duplicar (nombre+importe).
+  function importCargos(f, data) {
+    const list = Array.isArray(data) ? data : data && Array.isArray(data.cargos) ? data.cargos : null;
+    if (!list) throw new Error();
+    const key = (n, a) => String(n).trim().toLowerCase() + '|' + (Math.round(Number(a) * 100) / 100);
+    const have = new Set(state.folders.filter((x) => x.type === 'cargos').flatMap((x) => cargosOf(x).map((c) => key(c.name, c.amount))));
+    let added = 0;
+    list.forEach((r) => {
+      const name = String(r.name || r.nombre || '').trim().slice(0, 80), amount = Math.round(Number(r.amount ?? r.importe) * 100) / 100;
+      const period = PERIODS[r.period || r.periodicidad] ? (r.period || r.periodicidad) : 'mensual';
+      let day = parseInt(r.day ?? r.dia, 10), start = /^\d{4}-\d{2}-\d{2}$/.test(r.start || '') ? r.start : null;
+      if (!name || !isFinite(amount) || amount < 0 || (!start && !(day >= 1 && day <= 31))) return;
+      if (have.has(key(name, amount))) return;
+      if (!start) start = dayKey(firstForDay(day)); else day = parseDay(start).getDate();
+      f.items.push({ id: uid(), kind: 'cargo', created: Date.now(), name, amount, account: String(r.account || r.cuenta || '').slice(0, 40), period, mode: start && r.start ? 'date' : 'day', start, day });
+      have.add(key(name, amount)); added++;
+    });
+    return added;
+  }
   function cargoHtml(c) {
     const d = nextCharge(c), n = daysUntil(d), u = urgency(n);
     return `<div class="item cargo ${u}" data-id="${c.id}" data-cedit="${c.id}" tabindex="0">
@@ -441,7 +477,7 @@
     let body;
     if (f.type === 'cargos') {
       const cs = cargosOf(f).map((c) => [c, nextCharge(c)]).sort((a, b) => a[1] - b[1]);
-      body = cs.length ? `<div class="list">${cs.map(([c]) => cargoHtml(c)).join('')}</div>`
+      body = cs.length ? `<div class="list">${cs.map(([c]) => cargoHtml(c)).join('')}</div>${forecastHtml(cargosOf(f))}`
         : `<div class="empty"><span class="big">💳</span><b>Sin cargos todavía</b>Añade tus recibos domiciliados y te avisaremos antes de cada cargo.</div>`;
     } else if (!f.items.length) {
       const msg = {
@@ -479,7 +515,7 @@
         ${hero}
       </section>
       ${body}
-      ${f.type === 'cargos' ? `<div class="addbar"><div class="addbar-inner"><button class="btn primary add-cargo" data-act="add-cargo">+ Añadir cargo</button></div></div>` : `<div class="addbar"><div class="addbar-inner">
+      ${f.type === 'cargos' ? `<div class="addbar"><div class="addbar-inner"><button class="btn imp-cargos" data-act="imp-cargos" aria-label="Importar cargos desde archivo JSON">📥 Importar</button><button class="btn primary add-cargo" data-act="add-cargo">+ Añadir cargo</button><input type="file" id="impc" accept="application/json,.json" hidden></div></div>` : `<div class="addbar"><div class="addbar-inner">
         ${kinds.length ? `<div class="kinds">${kinds.map(([x, l]) => `<button data-kind="${x}" class="${x === k ? 'on' : ''}">${l}</button>`).join('')}</div>` : ''}
         <form class="add-row" autocomplete="off">
           <textarea rows="1" id="add-input" placeholder="${esc(placeholder(f, k))}" enterkeyhint="${k === 'note' ? 'enter' : 'done'}" aria-label="Añadir"></textarea>
@@ -579,6 +615,12 @@
       if (act === 'back') { history.length > 1 && lastWasHome ? history.back() : go('#/'); }
       if (act === 'folder-menu') folderMenu(f);
       if (act === 'add-cargo') cargoForm(f);
+      if (act === 'imp-cargos') $('#impc').click();
+    };
+    $('#impc').onchange = async (e) => {
+      const file = e.target.files[0]; if (!file) return;
+      try { const n = importCargos(f, JSON.parse(await file.text())); save(); render(); toast(n ? `${plural(n, 'cargo importado', 'cargos importados')} ✓` : 'Sin cargos nuevos (ya estaban)'); }
+      catch (_) { toast('Archivo no válido'); }
     };
     app.onkeydown = (e) => { const ed = e.target.closest('[data-cedit]'); if (ed && e.target === ed && e.key === 'Enter') cargoForm(f, find(ed.dataset.cedit)); };
     bindLongPress(app, '.item', (el) => cargoMenu(f, find(el.dataset.id)));
