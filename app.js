@@ -196,9 +196,21 @@
       ${fc.map((x) => `<div class="fc-row"><span class="fc-m">${x.m.toLocaleDateString('es-ES', { month: 'short', year: '2-digit' })}</span><div class="fc-bar"><i style="width:${(x.sum / max * 100).toFixed(1)}%"></i></div><b>${eur(x.sum)}</b></div>`).join('')}</section>`;
   }
   // Importa cargos desde JSON ({cargos:[...]} o [...]) y los fusiona sin duplicar (nombre+importe).
+  // Acepta texto con BOM/basura alrededor, {cargos}, [...], o la copia completa de la app ({folders}).
+  function parseCargos(t) {
+    t = String(t).replace(/^\uFEFF/, '').trim();
+    const i = t.search(/[[{]/), d = JSON.parse(i > 0 ? t.slice(i) : t);
+    if (Array.isArray(d?.folders)) return d.folders.filter((x) => x.type === 'cargos').flatMap((x) => (x.items || []).filter((c) => c.kind === 'cargo'));
+    return d;
+  }
+  // Fila compacta del enlace: [nombre, importe, día, cuenta, periodo]
+  const unpack = (r) => Array.isArray(r) ? { name: r[0], amount: r[1], day: r[2], account: r[3], period: r[4] } : r;
   function importCargos(f, data) {
-    const list = Array.isArray(data) ? data : data && Array.isArray(data.cargos) ? data.cargos : null;
+    let list = Array.isArray(data) ? data : data && Array.isArray(data.cargos) ? data.cargos : null;
     if (!list) throw new Error();
+    list = list.map(unpack);
+    if (!list) throw new Error();
+    if (f === null) f = state.folders.find((x) => x.type === 'cargos') || (state.folders.push({ id: uid(), name: 'Cargos', emoji: '💳', color: 'coral', type: 'cargos', items: [], completedDays: [], lastReset: dayKey(), created: Date.now() }), state.folders.at(-1));
     const key = (n, a) => String(n).trim().toLowerCase() + '|' + (Math.round(Number(a) * 100) / 100);
     const have = new Set(state.folders.filter((x) => x.type === 'cargos').flatMap((x) => cargosOf(x).map((c) => key(c.name, c.amount))));
     let added = 0;
@@ -213,6 +225,21 @@
       have.add(key(name, amount)); added++;
     });
     return added;
+  }
+  function doImp(f, txt, err) {
+    try { const n = importCargos(f, parseCargos(txt)); closeSheet(true); save(); render(); toast(n ? `${plural(n, 'cargo importado', 'cargos importados')} ✓` : 'Sin cargos nuevos (ya estaban)'); }
+    catch (_) { toast(err); }
+  }
+  // Enlace #importar-cargos=<base64url JSON>: el fragmento nunca llega al servidor.
+  function linkImport() {
+    const m = location.hash.match(/^#importar-cargos=([\w-]+)/); if (!m) return;
+    history.replaceState(null, '', location.pathname + location.search + '#/');
+    let list;
+    try { const b = atob(m[1].replace(/-/g, '+').replace(/_/g, '/')); list = parseCargos(new TextDecoder().decode(Uint8Array.from(b, (c) => c.charCodeAt(0)))); list = Array.isArray(list) ? list : list.cargos; if (!Array.isArray(list)) throw 0; }
+    catch (_) { toast('Enlace no válido'); return; }
+    confirmSheet('Importar cargos', `Se van a añadir ${plural(list.length, 'cargo', 'cargos')} a la carpeta Cargos (los repetidos se omiten).`, 'Añadir', () => {
+      const n = importCargos(null, list); save(); render(); toast(n ? `${plural(n, 'cargo importado', 'cargos importados')} ✓` : 'Sin cargos nuevos (ya estaban)');
+    });
   }
   function cargoHtml(c) {
     const d = nextCharge(c), n = daysUntil(d), u = urgency(n);
@@ -515,7 +542,7 @@
         ${hero}
       </section>
       ${body}
-      ${f.type === 'cargos' ? `<div class="addbar"><div class="addbar-inner"><button class="btn imp-cargos" data-act="imp-cargos" aria-label="Importar cargos desde archivo JSON">📥 Importar</button><button class="btn primary add-cargo" data-act="add-cargo">+ Añadir cargo</button><input type="file" id="impc" accept="application/json,.json" hidden></div></div>` : `<div class="addbar"><div class="addbar-inner">
+      ${f.type === 'cargos' ? `<div class="addbar"><div class="addbar-inner"><button class="btn imp-cargos" data-act="imp-cargos" aria-label="Importar cargos desde archivo JSON">📥 Importar</button><button class="btn primary add-cargo" data-act="add-cargo">+ Añadir cargo</button><input type="file" id="impc" hidden></div></div>` : `<div class="addbar"><div class="addbar-inner">
         ${kinds.length ? `<div class="kinds">${kinds.map(([x, l]) => `<button data-kind="${x}" class="${x === k ? 'on' : ''}">${l}</button>`).join('')}</div>` : ''}
         <form class="add-row" autocomplete="off">
           <textarea rows="1" id="add-input" placeholder="${esc(placeholder(f, k))}" enterkeyhint="${k === 'note' ? 'enter' : 'done'}" aria-label="Añadir"></textarea>
@@ -615,13 +642,15 @@
       if (act === 'back') { history.length > 1 && lastWasHome ? history.back() : go('#/'); }
       if (act === 'folder-menu') folderMenu(f);
       if (act === 'add-cargo') cargoForm(f);
-      if (act === 'imp-cargos') $('#impc').click();
+      if (act === 'imp-cargos') openSheet(`<h3>📥 Importar cargos</h3><div class="menu-list"><button data-x="file"><span class="mi">📄</span>Elegir archivo</button></div>
+        <textarea id="impt" rows="5" placeholder="…o pega aquí el texto JSON" style="width:100%;box-sizing:border-box;margin-top:12px;font:13px monospace;padding:10px;border-radius:12px"></textarea>
+        <div class="sheet-actions"><button class="btn" data-x="no">Cancelar</button><button class="btn primary" data-x="paste">Pegar texto</button></div>`, (s) => {
+        s.onclick = (e) => { const x = e.target.closest('[data-x]')?.dataset.x;
+          if (x === 'no') closeSheet(); if (x === 'file') { closeSheet(true); $('#impc').click(); }
+          if (x === 'paste') doImp(f, $('#impt', s).value, 'Texto no válido'); };
+      });
     };
-    $('#impc').onchange = async (e) => {
-      const file = e.target.files[0]; if (!file) return;
-      try { const n = importCargos(f, JSON.parse(await file.text())); save(); render(); toast(n ? `${plural(n, 'cargo importado', 'cargos importados')} ✓` : 'Sin cargos nuevos (ya estaban)'); }
-      catch (_) { toast('Archivo no válido'); }
-    };
+    $('#impc').onchange = async (e) => { const file = e.target.files[0]; e.target.value = ''; if (file) doImp(f, await file.text(), 'Archivo no válido'); };
     app.onkeydown = (e) => { const ed = e.target.closest('[data-cedit]'); if (ed && e.target === ed && e.key === 'Enter') cargoForm(f, find(ed.dataset.cedit)); };
     bindLongPress(app, '.item', (el) => cargoMenu(f, find(el.dataset.id)));
   }
@@ -962,7 +991,7 @@
       <button data-x="reset" class="danger"><span class="mi">♻️</span>Borrar todo y empezar de cero</button>
     </div>
     <p style="color:var(--muted);font-size:13px;text-align:center;margin:16px 0 0">Tus datos se guardan solo en este dispositivo.<br>Mis Tareas · v3</p>
-    <input type="file" id="imp" accept="application/json,.json" hidden>`, (s) => {
+    <input type="file" id="imp" hidden>`, (s) => {
       s.onclick = (e) => {
         const x = e.target.closest('[data-x]')?.dataset.x; if (!x) return;
         if (x === 'export') {
@@ -1020,8 +1049,10 @@
 
   // ---------- Arranque ----------
   load();
-  if (!location.hash) history.replaceState(null, '', '#/');
-  render();
+  const pendingLink = /^#importar-cargos=/.test(location.hash);
+  if (!location.hash || pendingLink) history.replaceState(null, '', location.pathname + location.search + (pendingLink ? location.hash : '#/'));
+  if (pendingLink) { const h = location.hash; history.replaceState(null, '', location.pathname + location.search + '#/'); render(); history.replaceState(null, '', h); linkImport(); } else render();
+  window.addEventListener('hashchange', () => { if (/^#importar-cargos=/.test(location.hash)) { linkImport(); render(); } });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { dailyReset(); } });
   setInterval(() => dailyReset(), 60 * 1000);
   window.addEventListener('storage', (e) => { if (e.key === STORE_KEY) { load(); render(); } });
