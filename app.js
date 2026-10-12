@@ -325,6 +325,7 @@
   window.addEventListener('hashchange', () => { closeSheet(true); render(); });
 
   function render() {
+    if (window.MTLock && MTLock.isLocked()) return;
     const r = route();
     const app = $('#app');
     const key = r.view + (r.id || '');
@@ -987,10 +988,11 @@
     openSheet(`<h3>⚙️ Ajustes</h3><div class="menu-list">
       <button data-x="export"><span class="mi">💾</span>Exportar copia de seguridad</button>
       <button data-x="import"><span class="mi">📥</span>Importar copia de seguridad</button>
+      <button data-x="lock"><span class="mi">👆</span>Bloqueo con huella<span style="margin-left:auto;font-size:13px;color:var(--muted)">${window.MTLock && MTLock.isEnabled() ? 'Activado' : 'Desactivado'}</span></button>
       <button data-x="install"><span class="mi">📲</span>Cómo instalar en el móvil</button>
       <button data-x="reset" class="danger"><span class="mi">♻️</span>Borrar todo y empezar de cero</button>
     </div>
-    <p style="color:var(--muted);font-size:13px;text-align:center;margin:16px 0 0">Tus datos se guardan solo en este dispositivo.<br>Mis Tareas · v3</p>
+    <p style="color:var(--muted);font-size:13px;text-align:center;margin:16px 0 0">Tus datos se guardan solo en este dispositivo.<br>Mis Tareas · v4</p>
     <input type="file" id="imp" hidden>`, (s) => {
       s.onclick = (e) => {
         const x = e.target.closest('[data-x]')?.dataset.x; if (!x) return;
@@ -1001,6 +1003,7 @@
           toast('Copia exportada'); closeSheet();
         }
         if (x === 'import') $('#imp', s).click();
+        if (x === 'lock') { closeSheet(true); MTLock.openSettings(toast); }
         if (x === 'install') {
           openSheet(`<h3>📲 Instalar en el móvil</h3><div style="line-height:1.55;color:var(--muted)">
             <p><b style="color:var(--text)">Android (Chrome):</b> menú ⋮ → <i>Añadir a pantalla de inicio</i> o <i>Instalar aplicación</i>.</p>
@@ -1048,11 +1051,15 @@
   }
 
   // ---------- Arranque ----------
+  // El contenido no se pinta hasta desbloquear (MTLock.gate llama al instante si no hay bloqueo).
   load();
-  const pendingLink = /^#importar-cargos=/.test(location.hash);
-  if (!location.hash || pendingLink) history.replaceState(null, '', location.pathname + location.search + (pendingLink ? location.hash : '#/'));
-  if (pendingLink) { const h = location.hash; history.replaceState(null, '', location.pathname + location.search + '#/'); render(); history.replaceState(null, '', h); linkImport(); } else render();
-  window.addEventListener('hashchange', () => { if (/^#importar-cargos=/.test(location.hash)) { linkImport(); render(); } });
+  function boot() {
+    const pendingLink = /^#importar-cargos=/.test(location.hash);
+    if (!location.hash || pendingLink) history.replaceState(null, '', location.pathname + location.search + (pendingLink ? location.hash : '#/'));
+    if (pendingLink) { const h = location.hash; history.replaceState(null, '', location.pathname + location.search + '#/'); render(); history.replaceState(null, '', h); linkImport(); } else render();
+    window.addEventListener('hashchange', () => { if (MTLock.isLocked()) return; if (/^#importar-cargos=/.test(location.hash)) { linkImport(); render(); } });
+  }
+  MTLock.gate((first) => { if (first) boot(); else { load(); render(); if (/^#importar-cargos=/.test(location.hash)) linkImport(); } });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { dailyReset(); } });
   setInterval(() => dailyReset(), 60 * 1000);
   window.addEventListener('storage', (e) => { if (e.key === STORE_KEY) { load(); render(); } });

@@ -1,7 +1,7 @@
 /* Service worker: la app funciona sin conexión (cache-first para los archivos propios). */
-const CACHE = 'mis-tareas-v5';
+const CACHE = 'mis-tareas-v6';
 const ASSETS = [
-  './', './index.html', './styles.css', './app.js', './manifest.json',
+  './', './index.html', './styles.css', './app.js', './lock.js', './manifest.json',
   './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png', './icons/apple-touch-icon.png'
 ];
 
